@@ -1,91 +1,120 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
+import os
 
-# ================= 0. 数据加载 =================
+# ================= 基础设置 =================
+# 设置中文字体，防止图表中的中文显示为方块
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+# 创建保存图片的文件夹
+os.makedirs('pictures', exist_ok=True)
+
+# 1. 加载数据
 print("正在加载数据...")
 train_df = pd.read_csv('with_blood.csv')
 test_df = pd.read_csv('within_blood.csv')
 
-# ================= 1. 删除无关字段 & 提取因变量 =================
-print("正在执行：删除id、体检日期，提取血糖字段...")
+# ================= 步骤 1 & 2: 基础清洗与编码 =================
+# 删除 id 和 体检日期
 cols_to_drop = ['id', '体检日期']
-train_df = train_df.drop(columns=cols_to_drop, errors='ignore')
-test_df = test_df.drop(columns=cols_to_drop, errors='ignore')
+train_df.drop(columns=[c for c in cols_to_drop if c in train_df.columns], inplace=True)
+test_df.drop(columns=[c for c in cols_to_drop if c in test_df.columns], inplace=True)
 
-# 将“血糖”作为因变量单独提取，不参与后续的特征缩放和插补
-target_col = '血糖'
-y_train = train_df[target_col].copy()
-train_df = train_df.drop(columns=[target_col])
+# 性别编码：男->1, 女->0 (处理前后空格防止报错)
+train_df['性别'] = train_df['性别'].astype(str).str.strip().map({'男': 1, '女': 0})
+test_df['性别'] = test_df['性别'].astype(str).str.strip().map({'男': 1, '女': 0})
 
-# ================= 2. 性别编码 =================
-print("正在执行：性别 0-1 编码...")
-gender_map = {'男': 1, '女': 0}
-# 假设数据中性别为男/女，如果存在缺失值，map后会变成NaN，将在后续KNN中被插补
-train_df['性别'] = train_df['性别'].map(gender_map)
-test_df['性别'] = test_df['性别'].map(gender_map)
+# 分离目标变量 (血糖)，防止它参与特征的填补和标准化
+y_train = train_df['血糖']
+X_train = train_df.drop(columns=['血糖'])
+X_test = test_df.copy()
 
-# ================= 3. 处理高比例缺失特征 =================
-print("正在执行：剔除高缺失率特征...")
-# 以训练集的缺失率为基准，超过60%（涵盖了约76%缺失的乙肝相关指标）直接删除
-missing_ratios = train_df.isnull().sum() / len(train_df)
-high_missing_cols = missing_ratios[missing_ratios > 0.6].index.tolist()
+# 【关键防错】强制对齐训练集和预测集的列顺序，防止后期 fit/transform 报错
+X_test = X_test[X_train.columns]
 
-train_df = train_df.drop(columns=high_missing_cols)
-test_df = test_df.drop(columns=high_missing_cols)
+# ================= 步骤 3: 缺失值处理 =================
+print("正在处理缺失值...")
+# 计算训练集的缺失率，删除缺失率 > 50% 的高比例特征 (如乙肝系列)
+missing_ratios = X_train.isnull().mean()
+high_missing_cols = missing_ratios[missing_ratios > 0.5].index.tolist()
+print(f"删除高缺失率特征: {high_missing_cols}")
 
-# 获取剩余的所有特征名称，确保训练集和测试集特征对齐
-features = train_df.columns.tolist()
-# 强制让测试集的列顺序与训练集完全一致，避免后续出现 ValueError
-test_df = test_df[features]
+X_train.drop(columns=high_missing_cols, inplace=True)
+X_test.drop(columns=high_missing_cols, inplace=True)
 
-# ================= 4. 异常值处理 (1% - 99% 分位数缩尾) =================
-print("正在执行：异常值分位数缩尾...")
-# 连续型变量进行缩尾，排除性别这种二分类指标
-continuous_features = [f for f in features if f != '性别']
+# KNN 多变量插补 (基于训练集 fit)
+imputer = KNNImputer(n_neighbors=5)
+X_train_cols = X_train.columns
 
-# 注意：分位数上限和下限必须由【训练集】计算得出
-lower_bounds = train_df[continuous_features].quantile(0.01)
-upper_bounds = train_df[continuous_features].quantile(0.99)
+X_train_imputed = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train_cols)
+# 严格使用训练集的分布来填补测试集
+X_test_imputed = pd.DataFrame(imputer.transform(X_test), columns=X_train_cols)
 
-for col in continuous_features:
-    # 使用训练集的边界去限制训练集和测试集
-    train_df[col] = train_df[col].clip(lower=lower_bounds[col], upper=upper_bounds[col])
-    test_df[col] = test_df[col].clip(lower=lower_bounds[col], upper=upper_bounds[col])
+# ================= 步骤 4: 箱线图与异常值缩尾 =================
+print("正在绘制箱线图并处理异常值...")
+# 选取部分显著且含义明确的生理特征输出箱线图，避免全部输出导致臃肿
+plot_cols = ['尿素', '肌酐', '尿酸', '总胆固醇', '甘油三酯',
+             '白细胞计数', '*天门冬氨酸氨基转换酶', '*丙氨酸氨基转换酶']
+plot_cols = [c for c in plot_cols if c in X_train_imputed.columns]
 
-# ================= 5. 缺失值插补 (KNN多变量插补) =================
-print("正在执行：KNN多变量插补...")
-# 以训练集去 fit 模型
-knn_imputer = KNNImputer(n_neighbors=5, weights='distance')
-train_imputed = knn_imputer.fit_transform(train_df)
-# 测试集仅做 transform，不参与 fit
-test_imputed = knn_imputer.transform(test_df)
+plt.figure(figsize=(10, 8))
+# orient='h' 让箱线图横向显示，特征名称自然就是横着的，方便阅读
+sns.boxplot(data=X_train_imputed[plot_cols], orient='h', palette="Set2")
+plt.title('显著生理特征箱线图 (异常值处理前)', fontsize=14)
+plt.xlabel('数值')
+plt.ylabel('特征名称')
+plt.tight_layout()
+plt.savefig('pictures/feature_boxplot.png', dpi=300)
+plt.close()
 
-train_df = pd.DataFrame(train_imputed, columns=features)
-test_df = pd.DataFrame(test_imputed, columns=features)
+# 异常值缩尾处理 (1% - 99%)
+# 排除性别(0/1)和年龄，仅对连续型生理指标进行缩尾
+exclude_clip = ['性别', '年龄']
+clip_cols = [c for c in X_train_imputed.columns if c not in exclude_clip]
 
-# ================= 6. 标准化处理 (Z-score) =================
-print("正在执行：特征标准化...")
+for col in clip_cols:
+    # 严格使用训练集的 1% 和 99% 分位数
+    lower_bound = X_train_imputed[col].quantile(0.01)
+    upper_bound = X_train_imputed[col].quantile(0.99)
+
+    X_train_imputed[col] = X_train_imputed[col].clip(lower=lower_bound, upper=upper_bound)
+    X_test_imputed[col] = X_test_imputed[col].clip(lower=lower_bound, upper=upper_bound)
+
+# ================= 步骤 5: 标准化 =================
+print("正在进行Z-score标准化...")
 scaler = StandardScaler()
 
-# 使用训练集的均值和方差去 fit
-scaler.fit(train_df[continuous_features])
-# 分别对训练集和测试集进行 transform
-train_df[continuous_features] = scaler.transform(train_df[continuous_features])
-test_df[continuous_features] = scaler.transform(test_df[continuous_features])
+# 对除了 '性别' 以外的特征进行标准化 (年龄作为连续变量可以标准化，有助于模型收敛)
+scale_cols = [c for c in X_train_imputed.columns if c != '性别']
 
-# ================= 7. 特征重新排序与合并因变量 =================
-print("正在执行：特征排序整合与导出...")
-# 对处理后的特征按拼音/字母排序，看起来更舒服
-sorted_features = sorted(features)
-train_df = train_df[sorted_features]
-test_df = test_df[sorted_features]
+X_train_scaled = X_train_imputed.copy()
+X_test_scaled = X_test_imputed.copy()
 
-# 将目标变量“血糖”拼接到训练集的最后一列
-train_df['血糖'] = y_train.values
+# 严格使用训练集的 均值(μ) 和 标准差(σ) 来 transform 预测集
+X_train_scaled[scale_cols] = scaler.fit_transform(X_train_imputed[scale_cols])
+X_test_scaled[scale_cols] = scaler.transform(X_test_imputed[scale_cols])
 
-# ================= 8. 保存文件 =================
-train_df.to_csv('with_blood_processed.csv', index=False)
-test_df.to_csv('within_blood_processed.csv', index=False)
-print("预处理完成！文件已保存为 'with_blood_processed.csv' 和 'within_blood_processed.csv'。")
+# ================= 步骤 6: 特征重新排序 =================
+# 让特征看起来更舒服：将 性别、年龄 放在最前，其余特征按名称拼音/字母排序
+print("正在重新排序特征...")
+sorted_features = sorted([c for c in X_train_scaled.columns if c not in ['性别', '年龄']])
+final_cols = ['性别', '年龄'] + sorted_features
+
+X_train_final = X_train_scaled[final_cols]
+X_test_final = X_test_scaled[final_cols]
+
+# 将目标变量 (血糖) 拼接到训练集的最后一列
+train_final = X_train_final.copy()
+train_final['血糖'] = y_train.values
+
+# ================= 保存处理后的数据 =================
+print("处理完成，正在保存数据...")
+train_final.to_csv('with_blood_processed.csv', index=False, encoding='utf-8-sig')
+X_test_final.to_csv('within_blood_processed.csv', index=False, encoding='utf-8-sig')
+
+print("全部运行成功！处理后的文件已生成，箱线图已保存至 pictures 文件夹。")
