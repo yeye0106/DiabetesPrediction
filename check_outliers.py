@@ -101,7 +101,7 @@ if __name__ == '__main__':
     detect_outliers_iqr(
         file_path='with_blood.csv',
         output_report_path='train_outliers_report.csv',
-        output_image_path='train_outliers_boxplot.png',
+        output_image_path='picture/train_outliers_boxplot.png',
         dataset_title='训练集 (with_blood)'
     )
 
@@ -109,6 +109,6 @@ if __name__ == '__main__':
     detect_outliers_iqr(
         file_path='within_blood.csv',
         output_report_path='test_outliers_report.csv',
-        output_image_path='test_outliers_boxplot.png',
+        output_image_path='picture/test_outliers_boxplot.png',
         dataset_title='测试集 (within_blood)'
     )
