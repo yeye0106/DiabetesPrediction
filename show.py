@@ -23,7 +23,7 @@ print(df.head(2))
 columns1 = df.columns
 print(columns1)
 print(df.shape)
-missing_report(df)
+# missing_report(df)
 
 
 df = pd.read_csv('within_blood.csv')
@@ -31,4 +31,4 @@ print(df.head(2))
 columns2 = df.columns
 print(columns2)
 print(df.shape)
-missing_report(df)
+# missing_report(df)
