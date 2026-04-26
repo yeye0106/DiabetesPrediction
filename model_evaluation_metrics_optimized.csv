@@ -1,4 +1,0 @@
-﻿模型名称,最佳参数,训练集 R²,测试集 R²,过拟合落差,测试集 RMSE
-Ridge (岭回归),{'alpha': 100.0},0.1546,0.1282,0.0264,1.2617
-Random Forest (随机森林),"{'max_depth': 8, 'min_samples_leaf': 5, 'n_estimators': 200}",0.4237,0.1059,0.3177,1.2777
-XGBoost (极端梯度提升),"{'learning_rate': 0.05, 'max_depth': 5, 'n_estimators': 100, 'reg_lambda': 10.0}",0.4994,0.1149,0.3845,1.2713
