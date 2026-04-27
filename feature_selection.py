@@ -192,7 +192,7 @@ print("\n前15个特征的VIF值：")
 print(vif_top15.sort_values('VIF', ascending=False))
 
 # ==================== 9. 保存所选特征列表 ====================
-with open('selected_features.txt', 'w') as f:
+with open('selected_features.txt', 'w', encoding= 'utf-8') as f:
     for feat in top15_features:
         f.write(feat + '\n')
 print("所选特征列表已保存至 selected_features.txt")
