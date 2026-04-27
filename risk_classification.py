@@ -43,15 +43,14 @@ X = train_df[top_features]
 # 根据血糖值划分三类风险等级 (0:低, 1:中, 2:高)
 y = pd.cut(train_df['血糖'], bins=[-np.inf, 6.1, 6.7, np.inf], labels=[0, 1, 2]).astype(int)
 
-# 划分训练集和验证集 (80/20，必须使用分层抽样 stratify 保证比例一致)
+# 划分训练集和验证集 (使用分层抽样保证比例一致)
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 # ==========================================
-# 2. 核心算法重构：Cost-Sensitive Stacking
+# 2. 构建 Cost-Sensitive Stacking
 # ==========================================
 print("\n2. 正在构建双重加权 Stacking 分类算法...")
 
-# (1) 基础模型池：全部开启对抗极度不平衡的 class_weight
 lgb = LGBMClassifier(
     n_estimators=300, learning_rate=0.01, max_depth=6, num_leaves=31,
     class_weight='balanced', random_state=42, n_jobs=-1, verbose=-1
@@ -67,15 +66,12 @@ cb = CatBoostClassifier(
     auto_class_weights='Balanced', random_state=42, verbose=0, thread_count=-1
 )
 
-# (2) 元模型设计：带惩罚项和类平衡的逻辑回归
-# 它将学习三个基模型的输出概率，并自动纠正它们的系统性偏差
 meta_learner = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
 
-# (3) 组装 Stacking 模型 (使用 'predict_proba' 作为特征传递给元模型)
 stacking_clf = StackingClassifier(
     estimators=[('lgb', lgb), ('rf', rf), ('cb', cb)],
     final_estimator=meta_learner,
-    cv=5,  # 内部 5 折交叉验证防止过拟合
+    cv=5,
     n_jobs=-1,
     stack_method='predict_proba'
 )
@@ -93,31 +89,25 @@ P1 = y_pred_proba[:, 0]
 P2 = y_pred_proba[:, 1]
 P3 = y_pred_proba[:, 2]
 
-# 评价 Log Loss
 loss = log_loss(y_val, y_pred_proba)
 print(f"✅ Stacking 交叉熵损失 (Log Loss): {loss:.4f}")
 
 # ==========================================
-# 4. 极致优化：动态阈值搜索 (找出最佳预警线)
+# 4. 动态阈值搜索（最大化高风险 Recall）
 # ==========================================
 print("\n4. 正在执行动态阈值搜索算法 (最大化高风险 Recall)...")
 
-# 我们的目标是：高危标签为 2
 y_val_binary_high = (y_val == 2).astype(int)
 
 best_threshold = 0.5
 best_recall = 0
-target_precision_min = 0.15  # 我们容忍一定程度的误报，但 Precision 不能崩盘到 0
+target_precision_min = 0.15
 
-# 遍历 0.10 到 0.60 的概率阈值
 for thresh in np.arange(0.10, 0.61, 0.01):
-    # 只要高风险概率大于阈值，就强制判定为 2 (高危)
     temp_pred = (P3 >= thresh).astype(int)
-
     rec = recall_score(y_val_binary_high, temp_pred)
     prec = precision_score(y_val_binary_high, temp_pred, zero_division=0)
 
-    # 寻找在满足最低精确率要求下，召回率最高的黄金阈值
     if prec >= target_precision_min and rec > best_recall:
         best_recall = rec
         best_threshold = thresh
@@ -128,11 +118,6 @@ print(f"   在此阈值下，高风险人群 Recall 可达: {best_recall:.4f}")
 # ==========================================
 # 5. 应用黄金阈值并输出最终评级
 # ==========================================
-# 覆盖死板的 argmax 逻辑：
-# 规则1: P3 >= 最佳阈值 -> 高风险(2)
-# 规则2: 如果不满足规则1，但 (P2 + P3) >= 0.45 -> 中风险(1)
-# 规则3: 其余 -> 低风险(0)
-
 y_pred_custom = np.zeros_like(y_val)
 for i in range(len(P3)):
     if P3[i] >= best_threshold:
@@ -148,7 +133,8 @@ for i in range(len(P3)):
 print("\n" + "=" * 60)
 print("🏆 Stacking + 动态阈值 最终分类报告")
 print("=" * 60)
-report = classification_report(y_val, y_pred_custom, target_names=['低风险(0)', '中风险(1)', '高风险(2)'])
+report = classification_report(y_val, y_pred_custom,
+                              target_names=['低风险(0)', '中风险(1)', '高风险(2)'])
 print(report)
 
 # 混淆矩阵绘图
@@ -167,10 +153,37 @@ plt.savefig(pic_save_path, dpi=300)
 print(f"\n✅ 混淆矩阵图已保存至: {pic_save_path}")
 
 # ==========================================
-# 7. 保存最终模型与阈值信息
+# 7. 保存分类报告、混淆矩阵、关键指标至 CSV
 # ==========================================
-# 我们不仅要保存模型，还要把找到的最佳阈值存下来，给第四问的预测集使用
-model_save_path = os.path.join(model_dir, 'best_risk_classification_stacking.pkl')
-joblib.dump(stacking_clf, model_save_path)
+# 将分类报告转为字典格式并保存
+report_dict = classification_report(y_val, y_pred_custom,
+                                   target_names=['低风险(0)', '中风险(1)', '高风险(2)'],
+                                   output_dict=True)
+report_df = pd.DataFrame(report_dict).transpose()
+report_csv_path = os.path.join(data_dir, 'multi_class_report.csv')
+report_df.to_csv(report_csv_path, index=True, encoding='utf-8-sig')
+print(f"📄 多分类报告已保存至: {report_csv_path}")
+
+# 混淆矩阵保存为 CSV
+cm_df = pd.DataFrame(cm,
+                     index=['真实:低', '真实:中', '真实:高'],
+                     columns=['预测:低', '预测:中', '预测:高'])
+cm_csv_path = os.path.join(data_dir, 'confusion_matrix.csv')
+cm_df.to_csv(cm_csv_path, index=True, encoding='utf-8-sig')
+print(f"📊 混淆矩阵已保存至: {cm_csv_path}")
+
+# 保存关键指标汇总（包括 LogLoss、最佳阈值、高风险 Recall/Precision）
+high_risk_prec = precision_score(y_val_binary_high, (P3 >= best_threshold).astype(int), zero_division=0)
+summary = pd.DataFrame({
+    '指标': ['LogLoss', '最佳高风险阈值', '高风险Recall', '高风险Precision'],
+    '数值': [loss, best_threshold, best_recall, high_risk_prec]
+})
+summary.to_csv(os.path.join(data_dir, 'model_summary.csv'), index=False, encoding='utf-8-sig')
+print("✅ 模型关键指标汇总已保存")
+
+# ==========================================
+# 8. 保存最终模型与阈值信息
+# ==========================================
+joblib.dump(stacking_clf, os.path.join(model_dir, 'best_risk_classification_stacking.pkl'))
 joblib.dump(best_threshold, os.path.join(model_dir, 'optimal_high_risk_threshold.pkl'))
 print(f"✅ 最优 Stacking 分类模型及动态阈值已保存！")
