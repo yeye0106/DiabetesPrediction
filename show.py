@@ -18,7 +18,7 @@ def missing_report(df):
     for col, count, pct in missing_info:
         print(f"{col}: {count} 缺失值, 占比 {pct:.2f}%")
 
-df = pd.read_csv('with_blood.csv')
+df = pd.read_csv('X_test_preprocessed.csv')
 print(df.head(2))
 columns1 = df.columns
 print(columns1)
@@ -26,7 +26,7 @@ print(df.shape)
 missing_report(df)
 
 
-df = pd.read_csv('within_blood.csv')
+df = pd.read_csv('X_train_preprocessed.csv')
 print(df.head(2))
 columns2 = df.columns
 print(columns2)
