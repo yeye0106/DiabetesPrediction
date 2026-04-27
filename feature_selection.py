@@ -15,7 +15,6 @@ plt.rcParams['axes.unicode_minus'] = False
 # ==================== 1. 读取数据 ====================
 train_df = pd.read_csv('with_blood_processed.csv')
 print("训练集形状:", train_df.shape)
-print("特征列表:", train_df.columns.tolist())
 
 # 分离 X 和 y
 y = train_df['血糖']
@@ -27,14 +26,13 @@ print(f"候选特征数量: {len(feature_names)}")
 pearson_corr = X.apply(lambda col: col.corr(y))
 pearson_corr_abs = pearson_corr.abs().sort_values(ascending=False)
 
-# 保存结果字典
 results = {
     'feature': feature_names,
     'pearson_corr': pearson_corr[feature_names].values,
     'pearson_abs': pearson_corr_abs[feature_names].values
 }
 
-# 相关系数柱状图（绝对值）
+# 柱状图
 plt.figure(figsize=(12, 6))
 sorted_idx = np.argsort(results['pearson_abs'])
 plt.barh(np.array(feature_names)[sorted_idx], results['pearson_abs'][sorted_idx], color='steelblue')
@@ -56,7 +54,7 @@ def calculate_vif(X):
         try:
             vif = variance_inflation_factor(X.values, i)
             if np.isinf(vif) or np.isnan(vif):
-                vif = 1000  # 处理无穷大
+                vif = 1000
         except:
             vif = 1000
         vif_values.append(vif)
@@ -67,7 +65,7 @@ vif_result = calculate_vif(X)
 vif_result = vif_result.sort_values('VIF', ascending=False)
 results['vif'] = vif_result.set_index('feature')['VIF'][feature_names].values
 
-# VIF 柱状图（原始尺度和对数尺度）
+# VIF 柱状图（原始）
 plt.figure(figsize=(12, 6))
 sorted_vif = vif_result.sort_values('VIF')
 plt.barh(sorted_vif['feature'], sorted_vif['VIF'], color='coral')
@@ -91,13 +89,12 @@ plt.savefig('pictures/vif_log_barplot.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("VIF 图已保存")
 
-# ==================== 4. Lasso 回归 (L1正则化) ====================
+# ==================== 4. Lasso 回归 ====================
 lasso = LassoCV(cv=5, random_state=42, max_iter=10000, alphas=np.logspace(-4, 1, 50))
 lasso.fit(X, y)
 lasso_coef = lasso.coef_
 results['lasso_coef'] = lasso_coef
 
-# 柱状图（系数绝对值）
 lasso_abs = np.abs(lasso_coef)
 plt.figure(figsize=(12, 6))
 sorted_lasso = np.argsort(lasso_abs)
@@ -111,7 +108,7 @@ plt.savefig('pictures/lasso_importance.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("Lasso 图已保存")
 
-# ==================== 5. 随机森林特征重要性 ====================
+# ==================== 5. 随机森林 ====================
 rf = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
 rf.fit(X, y)
 rf_importance = rf.feature_importances_
@@ -130,27 +127,21 @@ plt.close()
 print("随机森林特征重要性图已保存")
 
 # ==================== 6. 综合评分与排序 ====================
-# 构建 DataFrame
 df_results = pd.DataFrame(results)
-# 修正：确保列名正确，这里 results 中键为 'vif'，不是 'VIF'
-# 重命名为 VIF 便于理解
 df_results.rename(columns={'vif': 'VIF'}, inplace=True)
 
-# 计算排名（pearson_abs, lasso_abs, rf_imp 越大越好；VIF 越小越好）
 df_results['pearson_rank'] = df_results['pearson_abs'].rank(ascending=False, method='min')
 df_results['vif_rank'] = df_results['VIF'].rank(ascending=True, method='min')
 df_results['lasso_rank'] = df_results['lasso_coef'].abs().rank(ascending=False, method='min')
 df_results['rf_rank'] = df_results['rf_imp'].rank(ascending=False, method='min')
 
-# 等权重综合得分（排名和，越小越好）
-weights = {'pearson': 1, 'vif': 1, 'lasso': 1, 'rf': 1}
-df_results['total_score'] = (weights['pearson'] * df_results['pearson_rank'] +
-                             weights['vif'] * df_results['vif_rank'] +
-                             weights['lasso'] * df_results['lasso_rank'] +
-                             weights['rf'] * df_results['rf_rank'])
+df_results['total_score'] = (df_results['pearson_rank'] +
+                             df_results['vif_rank'] +
+                             df_results['lasso_rank'] +
+                             df_results['rf_rank'])
 df_results = df_results.sort_values('total_score')
 
-# 选出前15个特征（如果包含年龄/性别，但后续模型会移除它们，这里先按技术选出）
+# 选出前15个特征
 top15_features = df_results.head(15)['feature'].tolist()
 print("\n===== 优胜的15个字段（技术排名）=====")
 for i, f in enumerate(top15_features, 1):
@@ -160,7 +151,12 @@ for i, f in enumerate(top15_features, 1):
 df_results.to_csv('feature_selection_ranking.csv', index=False, encoding='utf-8-sig')
 print("\n特征筛选排名表已保存为 'feature_selection_ranking.csv'")
 
-# ==================== 7. 最终得分柱状图（前15） ====================
+# 输出前15个特征的值 CSV（含血糖）
+top15_values = train_df[top15_features + ['血糖']]
+top15_values.to_csv('top15_features_values.csv', index=False, encoding='utf-8-sig')
+print("前15个特征的值（含血糖）已保存为 'top15_features_values.csv'")
+
+# ==================== 7. 最终综合得分柱状图 ====================
 top15_df = df_results.head(15).copy()
 plt.figure(figsize=(12, 6))
 plt.barh(top15_df['feature'], top15_df['total_score'], color='darkblue')
@@ -173,26 +169,24 @@ plt.savefig('pictures/final_top15_score.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("最终综合得分柱状图已保存")
 
-# ==================== 8. 前15特征的相关系数热力图 ====================
+# ==================== 8. 特征间相关性热力图（15×15） ====================
 X_top15 = X[top15_features]
 corr_matrix = X_top15.corr()
-plt.figure(figsize=(12, 10))
+
+plt.figure(figsize=(14, 12))
 mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
-sns.heatmap(corr_matrix, mask=mask, annot=True, fmt='.2f', cmap='RdBu_r', center=0,
-            square=True, linewidths=0.5, cbar_kws={"shrink": 0.8})
-plt.title('前15个特征的相关系数热力图')
+sns.heatmap(corr_matrix, mask=mask, annot=True, fmt='.2f', cmap='coolwarm',
+            center=0, square=True, linewidths=0.5, cbar_kws={"shrink": 0.8})
+plt.title('前15个特征之间的相关系数热力图', fontsize=16)
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
 plt.tight_layout()
 plt.savefig('pictures/top15_corr_heatmap.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("前15个特征相关系数热力图已保存")
+print("前15个特征相关性热力图已保存为 'top15_corr_heatmap.png'")
 
-# 计算并输出这些特征的VIF值
+# 可选：输出这些特征的 VIF 值（仅控制台参考）
 vif_top15 = calculate_vif(X_top15)
-print("\n前15个特征的VIF值：")
+vif_top15 = vif_top15.set_index('feature')
+print("\n前15个特征的 VIF 值：")
 print(vif_top15.sort_values('VIF', ascending=False))
-
-# ==================== 9. 保存所选特征列表 ====================
-with open('selected_features.txt', 'w', encoding= 'utf-8') as f:
-    for feat in top15_features:
-        f.write(feat + '\n')
-print("所选特征列表已保存至 selected_features.txt")
