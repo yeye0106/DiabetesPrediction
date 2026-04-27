@@ -49,15 +49,27 @@ imputer = KNNImputer(n_neighbors=5)
 X_train_imp = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns)
 X_test_imp = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns)
 
-# ================= 4. 异常值缩尾（修正为1%~99%） =================
+# ================= 4. 异常值处理：3σ检测 + 分位数缩尾（仅对异常值） =================
 exclude_winsor = ['性别', '年龄']
 winsor_cols = [c for c in X_train_imp.columns if c not in exclude_winsor]
-print("📉 正在进行 1%~99% 分位数缩尾...")
+print("📉 正在进行 3σ 异常值检测 + 1%/99% 分位数缩尾（仅替换异常值）...")
 for col in winsor_cols:
-    lower, upper = X_train_imp[col].quantile([0.01, 0.99])
-    if lower < upper:
-        X_train_imp[col] = X_train_imp[col].clip(lower, upper)
-        X_test_imp[col] = X_test_imp[col].clip(lower, upper)
+    mean = X_train_imp[col].mean()
+    std = X_train_imp[col].std()
+    lower_bound = mean - 3 * std
+    upper_bound = mean + 3 * std
+    lower_q, upper_q = X_train_imp[col].quantile([0.01, 0.99])
+
+    # 标记训练集中的异常值
+    is_outlier = (X_train_imp[col] < lower_bound) | (X_train_imp[col] > upper_bound)
+    # 替换：小于 lower_bound 的用 lower_q，大于 upper_bound 的用 upper_q
+    X_train_imp.loc[is_outlier & (X_train_imp[col] < lower_bound), col] = lower_q
+    X_train_imp.loc[is_outlier & (X_train_imp[col] > upper_bound), col] = upper_q
+
+    # 测试集使用训练集计算的 3σ 边界和分位数
+    is_outlier_test = (X_test_imp[col] < lower_bound) | (X_test_imp[col] > upper_bound)
+    X_test_imp.loc[is_outlier_test & (X_test_imp[col] < lower_bound), col] = lower_q
+    X_test_imp.loc[is_outlier_test & (X_test_imp[col] > upper_bound), col] = upper_q
 
 # ================= 5. 标准化 =================
 scale_cols = [c for c in X_train_imp.columns if c not in ['性别']]
@@ -65,23 +77,16 @@ scaler = StandardScaler()
 X_train_imp[scale_cols] = scaler.fit_transform(X_train_imp[scale_cols])
 X_test_imp[scale_cols] = scaler.transform(X_test_imp[scale_cols])
 
-# ================= 6. 低相关性特征筛选（匹配文字描述） =================
-# 计算与血糖的皮尔逊相关系数
-corr_with_target = pd.DataFrame({'feature': X_train_imp.columns, 'corr': X_train_imp.corrwith(y_train).abs()})
-# 保留相关性 > 0.05 的特征，强制保留年龄/性别
-keep_mask = (corr_with_target['corr'] > 0.05) | (corr_with_target['feature'].isin(['年龄', '性别']))
-selected_features = corr_with_target[keep_mask]['feature'].tolist()
-print(f"🎯 保留相关性特征: {len(selected_features)} 个")
-
-X_train_final = X_train_imp[selected_features]
-X_test_final = X_test_imp[selected_features]
+# ================= 6. 保存预处理结果（全部特征，留待问题1筛选） =================
+# 不进行低相关性筛选，保证问题1从原始特征池出发
+X_train_final = X_train_imp.copy()
+X_test_final = X_test_imp.copy()
 
 # 重排序：性别、年龄在前，其余字母序
-final_order = ['性别', '年龄'] + sorted([c for c in selected_features if c not in ['性别', '年龄']])
+final_order = ['性别', '年龄'] + sorted([c for c in X_train_final.columns if c not in ['性别', '年龄']])
 X_train_final = X_train_final[final_order]
 X_test_final = X_test_final[final_order]
 
-# ================= 保存结果 =================
 train_final = X_train_final.copy()
 train_final['血糖'] = y_train.values
 train_final.to_csv('with_blood_processed.csv', index=False, encoding='utf-8-sig')
